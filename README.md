@@ -88,7 +88,7 @@ There is no separate backend service or database server to configure. Express se
 
 Keep the Vercel project root directory set to the repository root. The included `vercel.json` selects Vercel's Express integration so `/api/*` requests reach the Express routes; static files remain in `public/`. Set AI provider credentials as server-side Vercel environment variables, never as `NEXT_PUBLIC_*` values.
 
-**Storage limitation:** the prototype persists accounts and app data in `data/db.json`. Vercel Functions do not provide a persistent writable project filesystem, so account registration and data persistence are not reliable on Vercel without a persistent data store. Use a Node.js host with persistent disk for this MVP, or add a persistent database before relying on deployed accounts.
+**Storage limitation:** on Vercel the app uses `/tmp` to avoid writes to the read-only deployment filesystem, but that storage is temporary and isolated to a function instance. Accounts and app data can disappear or be unavailable between requests/cold starts. Use a Node.js host with persistent disk for a reliable demo, or add a persistent data store before relying on deployed accounts.
 
 ## Setup on Windows PowerShell
 

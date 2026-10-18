@@ -10,7 +10,8 @@ const AI_MODEL = process.env.AI_MODEL || (PROVIDER === "gemini" ? process.env.GE
 const app = express(),
   PORT = process.env.PORT || 3000,
   DAY = 864e5;
-const DBF = path.join(__dirname, "data", "db.json");
+const IS_VERCEL = process.env.VERCEL === "1";
+const DBF = IS_VERCEL ? path.join("/tmp", "binetna", "db.json") : path.join(__dirname, "data", "db.json");
 fs.mkdirSync(path.dirname(DBF), { recursive: true });
 
 // ---------- tiny JSON database (swap for SQLite/Postgres in production) ----------
@@ -20,6 +21,11 @@ try {
 } catch {}
 let tm;
 const saveDb = () => {
+  if (IS_VERCEL) {
+    fs.writeFileSync(DBF + ".tmp", JSON.stringify(db));
+    fs.renameSync(DBF + ".tmp", DBF);
+    return;
+  }
   clearTimeout(tm);
   tm = setTimeout(() => {
     fs.writeFileSync(DBF + ".tmp", JSON.stringify(db));
