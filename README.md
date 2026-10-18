@@ -84,6 +84,12 @@ AI output and keyword signals can be wrong or incomplete. Binetna is a prototype
 
 There is no separate backend service or database server to configure. Express serves both the static app and the API.
 
+## Deploying on Vercel
+
+Keep the Vercel project root directory set to the repository root. The included `vercel.json` selects Vercel's Express integration so `/api/*` requests reach the Express routes; static files remain in `public/`. Set AI provider credentials as server-side Vercel environment variables, never as `NEXT_PUBLIC_*` values.
+
+**Storage limitation:** the prototype persists accounts and app data in `data/db.json`. Vercel Functions do not provide a persistent writable project filesystem, so account registration and data persistence are not reliable on Vercel without a persistent data store. Use a Node.js host with persistent disk for this MVP, or add a persistent database before relying on deployed accounts.
+
 ## Setup on Windows PowerShell
 
 1. Install Node.js 18 or newer.
