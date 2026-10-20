@@ -11,19 +11,25 @@ const app = express(),
   PORT = process.env.PORT || 3000,
   DAY = 864e5;
 const IS_VERCEL = process.env.VERCEL === "1";
-const DBF = IS_VERCEL ? path.join("/tmp", "binetna", "db.json") : path.join(__dirname, "data", "db.json");
-fs.mkdirSync(path.dirname(DBF), { recursive: true });
+const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || "").replace(/\/+$/, "");
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
+const DB_REDIS_KEY = "binetna:app-state:v1";
+const DB_LOCK_KEY = DB_REDIS_KEY + ":lock";
+const DBF = path.join(__dirname, "data", "db.json");
+if (!IS_VERCEL) fs.mkdirSync(path.dirname(DBF), { recursive: true });
 
-// ---------- tiny JSON database (swap for SQLite/Postgres in production) ----------
+// ---------- local JSON storage; Upstash Redis on Vercel ----------
 let db = { users: {}, sessions: {}, posts: [], notes: [], logs: [] };
-try {
-  db = Object.assign(db, JSON.parse(fs.readFileSync(DBF, "utf8")));
-} catch {}
+if (!IS_VERCEL) {
+  try {
+    db = Object.assign(db, JSON.parse(fs.readFileSync(DBF, "utf8")));
+  } catch {}
+}
 let tm;
+let dbDirty = false;
 const saveDb = () => {
   if (IS_VERCEL) {
-    fs.writeFileSync(DBF + ".tmp", JSON.stringify(db));
-    fs.renameSync(DBF + ".tmp", DBF);
+    dbDirty = true;
     return;
   }
   clearTimeout(tm);
@@ -31,6 +37,20 @@ const saveDb = () => {
     fs.writeFileSync(DBF + ".tmp", JSON.stringify(db));
     fs.renameSync(DBF + ".tmp", DBF);
   }, 150);
+};
+const redisCommand = async (command) => {
+  const response = await fetch(UPSTASH_URL, {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + UPSTASH_TOKEN,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(command),
+    signal: AbortSignal.timeout(8000),
+  });
+  const result = await response.json();
+  if (!response.ok || result.error) throw new Error("Persistent storage request failed");
+  return result.result;
 };
 const id = () => crypto.randomBytes(8).toString("hex"),
   iso = (d) => new Date(d).toISOString().slice(0, 10);
@@ -182,8 +202,82 @@ if (!db.posts.length)
         : [],
   }));
 
+const INITIAL_DB = JSON.parse(JSON.stringify(db));
+
 // ---------- middleware ----------
 app.use(express.json({ limit: "50kb" }));
+app.use(async (q, r, next) => {
+  if (!IS_VERCEL || !q.path.startsWith("/api/") || q.path === "/api/health") return next();
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) {
+    return r.status(503).json({ error: "Persistent storage is not configured for this deployment" });
+  }
+
+  const lockToken = crypto.randomBytes(24).toString("hex");
+  let locked = false,
+    released = false;
+  const releaseLock = async () => {
+    if (!locked || released) return;
+    released = true;
+    try {
+      await redisCommand([
+        "EVAL",
+        "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+        1,
+        DB_LOCK_KEY,
+        lockToken,
+      ]);
+    } catch {
+      console.error("Could not release the Binetna storage lock");
+    }
+  };
+
+  try {
+    for (let attempt = 0; attempt < 30; attempt++) {
+      if ((await redisCommand(["SET", DB_LOCK_KEY, lockToken, "NX", "PX", 60000])) === "OK") {
+        locked = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!locked) return r.status(503).json({ error: "Storage is busy. Please try again." });
+
+    const stored = await redisCommand(["GET", DB_REDIS_KEY]);
+    db = stored
+      ? Object.assign({ users: {}, sessions: {}, posts: [], notes: [], logs: [] }, JSON.parse(stored))
+      : JSON.parse(JSON.stringify(INITIAL_DB));
+    dbDirty = false;
+    r.once("close", releaseLock);
+
+    const sendJson = r.json.bind(r);
+    r.json = (payload) => {
+      const respond = async () => {
+        try {
+          if (dbDirty) {
+            await redisCommand(["SET", DB_REDIS_KEY, JSON.stringify(db)]);
+            dbDirty = false;
+          }
+          await releaseLock();
+          return sendJson(payload);
+        } catch {
+          dbDirty = true;
+          await releaseLock();
+          console.error("Could not save Binetna data to persistent storage");
+          if (!r.headersSent) {
+            r.status(503);
+            return sendJson({ error: "Could not save your data. Please try again." });
+          }
+        }
+      };
+      respond();
+      return r;
+    };
+    next();
+  } catch {
+    await releaseLock();
+    console.error("Binetna persistent storage is unavailable");
+    return r.status(503).json({ error: "Persistent storage is unavailable. Please try again shortly." });
+  }
+});
 app.use(express.static(path.join(__dirname, "public")));
 const auth = (q, r, n) => {
   const t = (q.headers.authorization || "").replace("Bearer ", ""),
@@ -757,7 +851,17 @@ app.post("/api/insight", auth, async (q, r) => {
   insCache.set(key, { t: Date.now(), x });
   r.json({ text: x });
 });
-app.get("/api/health", (q, r) => r.json({ ok: true, ai: PROVIDER }));
+app.get("/api/health", async (q, r) => {
+  if (!IS_VERCEL) return r.json({ ok: true, ai: PROVIDER, storage: "local" });
+  if (!UPSTASH_URL || !UPSTASH_TOKEN)
+    return r.status(503).json({ ok: false, ai: PROVIDER, storage: "not_configured" });
+  try {
+    await redisCommand(["PING"]);
+    return r.json({ ok: true, ai: PROVIDER, storage: "upstash" });
+  } catch {
+    return r.status(503).json({ ok: false, ai: PROVIDER, storage: "unavailable" });
+  }
+});
 app.listen(PORT, () =>
   console.log(
     `HERwell running on http://localhost:${PORT}  (AI: ${PROVIDER}${AI_MODEL ? ", " + AI_MODEL : ""})`,

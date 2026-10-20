@@ -86,10 +86,15 @@ There is no separate backend service or database server to configure. Express se
 
 ## Deploying on Vercel
 
-Keep the Vercel project root directory set to the repository root. The included `vercel.json` selects Vercel's Express integration so `/api/*` requests reach the Express routes; static files remain in `public/`. Set AI provider credentials as server-side Vercel environment variables, never as `NEXT_PUBLIC_*` values.
+Keep the Vercel project root directory set to the repository root. The included `vercel.json` selects Vercel's Express integration so `/api/*` requests reach the Express routes; static files remain in `public/`.
 
-**Storage limitation:** on Vercel the app uses `/tmp` to avoid writes to the read-only deployment filesystem, but that storage is temporary and isolated to a function instance. Accounts and app data can disappear or be unavailable between requests/cold starts. Use a Node.js host with persistent disk for a reliable demo, or add a persistent data store before relying on deployed accounts.
+For persistent Vercel accounts, create an Upstash Redis database and add these server-side environment variables in Vercel (Production and Preview as needed):
 
+- `UPSTASH_REDIS_REST_URL`
+- `UPSTASH_REDIS_REST_TOKEN`
+- Your AI provider key as `AI_API_KEY` (and `AI_PROVIDER` / `AI_MODEL` when needed)
+
+Keep the Redis credentials and AI key server-side; do not use `NEXT_PUBLIC_*` names. Redeploy after adding variables. `/api/health` reports `storage: "upstash"` only when Redis is reachable. Local development continues to use the ignored `data/db.json` file; Vercel uses Redis instead.
 ## Setup on Windows PowerShell
 
 1. Install Node.js 18 or newer.
